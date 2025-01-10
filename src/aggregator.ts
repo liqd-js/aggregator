@@ -1,16 +1,30 @@
-'use strict';
+import { objectStringify } from '@liqd-js/fast-object-hash';
 
-module.exports = class Aggregator
+const nextTick = ( callback: () => unknown ) => typeof process !== 'undefined' ? process.nextTick( callback ) : setTimeout( callback, 0 );
+
+type Aggregate<ID> =
 {
-    #callback; #options; #aggregates = new Map(); #pending_aggregates = new Map(); #aggregating = false;
+    id  : string;
+    ids: Set<ID>;
+    args: any[];
+    calls: { id: ID | ID[], resolve: ( result: any ) => void, reject: ( err: any ) => void }[];
+}
 
-    constructor( callback, options = {})
+export type AggregatorCallback<ID,T> = ( ids: ID[], ...args: any[] ) => T | Promise<T>;
+
+export default class Aggregator<ID,T>
+{
+    #callback: AggregatorCallback<ID,T>;
+    #aggregates: Map<string, Aggregate> = new Map();
+    #pending_aggregates: Map<string, Set<Aggregate>> = new Map();
+    #aggregating = false;
+
+    constructor( callback: AggregatorCallback<ID,T> )
     {
         this.#callback = callback;
-        this.#options = options;
     }
 
-    #delete_pending_aggregate( aggregate )
+    #delete_pending_aggregate( aggregate: Aggregate<ID> )
     {
         let pending_aggregates = this.#pending_aggregates.get( aggregate.id );
 
@@ -18,14 +32,11 @@ module.exports = class Aggregator
         {
             pending_aggregates.delete( aggregate );
 
-            if( !pending_aggregates.size )
-            {
-                this.#pending_aggregates.delete( aggregate.id );
-            }
+            ( !pending_aggregates.size ) && this.#pending_aggregates.delete( aggregate.id );
         }
     }
 
-    #reject( aggregate, err )
+    #reject( aggregate: Aggregate<ID>, err: any )
     {
         for( let call of aggregate.calls )
         {
@@ -94,17 +105,17 @@ module.exports = class Aggregator
         }
     }
 
-    call( id, ...args )
+    call( ids: ID | ID[], ...args: any[] )
     {
         return new Promise(( resolve, reject ) =>
         {
-            let aggregateID = JSON.stringify( args ), pending_aggregates, aggregate, pending_results = [];
+            let aggregateID = objectStringify( args ), pending_aggregates, aggregate, pending_results = [];
 
             if( pending_aggregates = this.#pending_aggregates.get( aggregateID ))
             {
-                if( Array.isArray( id ))
+                if( Array.isArray( ids ))
                 {
-                    let ids = new Set( id ), result = {};
+                    let unique = new Set( ids ), result = {};
 
                     for( let aggregate of pending_aggregates )
                     {
@@ -157,9 +168,9 @@ module.exports = class Aggregator
                 {
                     for( let aggregate of pending_aggregates )
                     {
-                        if( aggregate.ids.has( id ))
+                        if( aggregate.ids.has( ids ))
                         {
-                            return aggregate.calls.push({ id, resolve, reject });
+                            return aggregate.calls.push({ ids, resolve, reject });
                         }
                     }
                 }
@@ -170,19 +181,19 @@ module.exports = class Aggregator
                 this.#aggregates.set( aggregateID, aggregate = { id: aggregateID, ids: new Set(), args, calls: []});
             }
 
-            if( Array.isArray( id ))
+            if( Array.isArray( ids ))
             {
-                id.forEach( id => aggregate.ids.add( id ));
+                ids.forEach( id => aggregate.ids.add( id ));
             }
-            else{ aggregate.ids.add( id )}
+            else{ aggregate.ids.add( ids )}
 
-            aggregate.calls.push({ id, resolve, reject });
+            aggregate.calls.push({ ids, resolve, reject });
 
             if( !this.#aggregating )
             {
                 this.#aggregating = true;
 
-                process.nextTick( this.#aggregated_calls.bind( this ));
+                nextTick( this.#aggregated_calls.bind( this ));
             }
         })
     }
